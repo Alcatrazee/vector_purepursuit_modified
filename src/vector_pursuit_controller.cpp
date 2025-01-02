@@ -15,6 +15,8 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
+#include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <string>
 #include <iostream>
 #include <limits>
@@ -101,6 +103,14 @@ void VectorPursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".cost_scaling_dist", rclcpp::ParameterValue(0.6));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_path_collision_detection", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".path_collision_detect_dist", rclcpp::ParameterValue(3.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".path_collision_min_velocity", rclcpp::ParameterValue(0.05));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".path_collision_stop_dist", rclcpp::ParameterValue(0.05));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".cost_scaling_gain", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".inflation_cost_scaling_factor", rclcpp::ParameterValue(3.0));
@@ -161,6 +171,16 @@ void VectorPursuitController::configure(
     plugin_name_ + ".use_cost_regulated_linear_velocity_scaling",
     use_cost_regulated_linear_velocity_scaling_);
   node->get_parameter(plugin_name_ + ".allow_reversing", allow_reversing_);
+  
+  node->get_parameter(plugin_name_ + ".use_path_collision_detection",
+    use_path_collision_detection_);
+  node->get_parameter(plugin_name_ + ".path_collision_detect_dist",
+    path_collision_detect_dist_);
+  node->get_parameter(plugin_name_ + ".path_collision_stop_dist",
+    path_collision_stop_dist_);
+  node->get_parameter(plugin_name_ + ".path_collision_min_velocity",
+    path_collision_min_velocity_);
+
   node->get_parameter(plugin_name_ + ".cost_scaling_dist", cost_scaling_dist_);
   node->get_parameter(plugin_name_ + ".cost_scaling_gain", cost_scaling_gain_);
   node->get_parameter(
@@ -207,6 +227,7 @@ void VectorPursuitController::configure(
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("lookahead_point", 1);
   target_arc_pub_ = node->create_publisher<nav_msgs::msg::Path>("lookahead_collision_arc", 1);
+  cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 1);
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::
@@ -224,6 +245,7 @@ void VectorPursuitController::cleanup()
   global_path_pub_.reset();
   target_pub_.reset();
   target_arc_pub_.reset();
+  cusp_pub_.reset();
 }
 
 void VectorPursuitController::activate()
@@ -236,6 +258,7 @@ void VectorPursuitController::activate()
   global_path_pub_->on_activate();
   target_pub_->on_activate();
   target_arc_pub_->on_activate();
+  cusp_pub_->on_activate();
   // Add callback for dynamic parameters
   auto node = node_.lock();
   dyn_params_handler_ = node->add_on_set_parameters_callback(
@@ -254,6 +277,7 @@ void VectorPursuitController::deactivate()
   global_path_pub_->on_deactivate();
   target_pub_->on_deactivate();
   target_arc_pub_->on_deactivate();
+  cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
 }
 
@@ -331,7 +355,7 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   double lookahead_dist = getLookAheadDistance(last_cmd_vel_);
 
   // Cusp check
-  const double dist_to_cusp = getCuspDist(transformed_plan);
+  const double dist_to_cusp = getCuspDist(transformed_plan);        // cusp means sharp turn point
 
   // if the lookahead distance is further than the cusp, use the cusp distance instead
   if (dist_to_cusp < lookahead_dist) {
@@ -364,7 +388,7 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
 
     // Compute linear velocity based on path curvature
     double curvature = 1.0 / turning_radius;
-
+     // TODO: add obstacle constrain in future path
     applyConstraints(
       curvature, last_cmd_vel_,
       costAtPose(pose.pose.position.x, pose.pose.position.y), linear_vel, transformed_plan, sign);
@@ -374,7 +398,7 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
     if (lookahead_point.pose.position.y < 0) {
       angular_vel *= -1;
     }
-    // rewrite angular velocity in final goal
+    // rewrite angular velocity control when tracking last goal
     if(lookahead_point == transformed_plan.poses[transformed_plan.poses.size()-1]){
       double target_angle = tf2::getYaw(transformed_plan.poses[transformed_plan.poses.size()-1].pose.orientation);
       angular_vel = k_yaw_ * target_angle;
@@ -481,12 +505,29 @@ void VectorPursuitController::applyConstraints(
     }
   }
 
+  double max_vel_for_path_obst = desired_linear_vel_;
+
+  if(use_path_collision_detection_){
+    double dist_to_obst = getClosestObstacleDistInPath(global_plan_);
+    if(dist_to_obst >0 && dist_to_obst < path_collision_detect_dist_){
+      if(dist_to_obst <= path_collision_stop_dist_){
+        max_vel_for_path_obst = 0;
+        throw nav2_core::PlannerException("VectorPursuitController: Collision detected ahead!");
+      }else{
+        double max_vel_for_path_obst_computed = (desired_linear_vel_ - 0)/(path_collision_detect_dist_ - path_collision_stop_dist_)*(dist_to_obst - path_collision_stop_dist_) + 0;
+        max_vel_for_path_obst = std::max(max_vel_for_path_obst_computed,path_collision_min_velocity_);
+        RCLCPP_INFO(logger_,"max_vel_for_path_obst:%lf  %lf",max_vel_for_path_obst,path_collision_stop_dist_);
+      }
+    }
+    
+  }
+
   // limit the linear velocity by curvature
   double max_vel_for_curve = std::sqrt(max_lateral_accel_ / std::abs(curvature));
 
   // Apply constraints
   linear_vel = std::min(
-    {linear_vel, max_vel_for_curve, cost_vel,
+    {linear_vel, max_vel_for_curve, cost_vel,max_vel_for_path_obst,
       std::abs(curr_speed.linear.x) + max_linear_accel_ * control_duration_});
 
   applyApproachVelocityScaling(path, linear_vel);
@@ -782,6 +823,12 @@ double VectorPursuitController::getCuspDist(
     then just determine the distance to the goal location. */
     const double dot_prod = (oa_x * ab_x) + (oa_y * ab_y);
     if (dot_prod < 0.0) {
+      geometry_msgs::msg::PointStamped point;
+      point.header.frame_id = costmap_ros_->getBaseFrameID();
+      point.header.stamp = rclcpp::Clock().now();
+      point.point.x = transformed_plan.poses[pose_id].pose.position.x;
+      point.point.y = transformed_plan.poses[pose_id].pose.position.y;
+      cusp_pub_->publish(point);
       // returning the distance if there is a cusp
       // The transformed path is in the robots frame, so robot is at the origin
       return hypot(
@@ -807,6 +854,42 @@ double VectorPursuitController::getCuspDist(
   }
 
   return std::numeric_limits<double>::max();
+}
+
+double VectorPursuitController::getClosestObstacleDistInPath(const nav_msgs::msg::Path &local_plan){
+  double dist = -1;
+  
+  // find closest point as start pose
+  size_t path_remaining_count = local_plan.poses.size();
+  size_t path_num = global_plan_.poses.size();
+  size_t start_pose_count = path_num - path_remaining_count;
+  // RCLCPP_INFO(logger_,"cost at path, current local plan counter is %ld %ld %ld",start_pose_count,path_remaining_count,path_num);
+  // double path_length = 0;
+  nav_msgs::msg::Path path_without_obst;
+  for(size_t i = start_pose_count+1; i < path_num; i++){
+    // path_length+=std::hypot(global_plan_.poses[i].pose.position.x - global_plan_.poses[i-1].pose.position.x,
+    //                         global_plan_.poses[i].pose.position.y - global_plan_.poses[i-1].pose.position.y);
+    double yaw;
+    tf2::Quaternion q(global_plan_.poses[i].pose.orientation.x, 
+                      global_plan_.poses[i].pose.orientation.y, 
+                      global_plan_.poses[i].pose.orientation.z, 
+                      global_plan_.poses[i].pose.orientation.w);
+    yaw = tf2::getYaw(q);
+    double cost = collision_checker_->footprintCostAtPose(global_plan_.poses[i].pose.position.x,
+                                                           global_plan_.poses[i].pose.position.y, 
+                                                           yaw,costmap_ros_->getRobotFootprint());
+    path_without_obst.poses.push_back(global_plan_.poses[i]);
+    // RCLCPP_INFO(logger_,"cost at %f,%f,%f is: %f",global_plan_.poses[i].pose.position.x,global_plan_.poses[i].pose.position.y,yaw,cost);
+    if(cost > static_cast<double>(nav2_costmap_2d::MAX_NON_OBSTACLE)){
+      // dist = path_length;
+      dist = nav2_util::geometry_utils::calculate_path_length(path_without_obst,start_pose_count);
+      
+      RCLCPP_INFO(logger_,"found obstacle, distance: %lf",dist);
+      break;
+    }
+  }
+  // RCLCPP_INFO(logger_,"===========");
+  return dist;
 }
 
 bool VectorPursuitController::inCollision(
@@ -990,6 +1073,12 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         max_allowed_time_to_collision_up_to_target_ = parameter.as_double();
       } else if (name == plugin_name_ + ".cost_scaling_dist") {
         cost_scaling_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".path_collision_detect_dist") {
+        path_collision_detect_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".path_collision_stop_dist") {
+        path_collision_stop_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".path_collision_min_velocity") {
+        path_collision_min_velocity_ = parameter.as_double();
       } else if (name == plugin_name_ + ".cost_scaling_gain") {
         cost_scaling_gain_ = parameter.as_double();
       } else if (name == plugin_name_ + ".transform_tolerance") {
@@ -1029,6 +1118,8 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         use_interpolation_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".use_heading_from_path") {
         use_heading_from_path_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_path_collision_detection") {
+        use_path_collision_detection_ = parameter.as_bool();
       }
     }
   }

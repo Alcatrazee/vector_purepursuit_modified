@@ -2,6 +2,10 @@
 Changelog for package vector_pursuit_controller
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+1.0.2 (2025-01-02)
+------------------
+* Add slow down and stopping in front of obstacle in path
+
 1.0.1 (2024-09-03)
 ------------------
 * Fixed liniting issues

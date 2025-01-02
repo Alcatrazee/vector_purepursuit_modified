@@ -34,6 +34,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 
 namespace vector_pursuit_controller
 {
@@ -269,6 +270,14 @@ protected:
    */
   bool shouldRotateToGoalHeading(const geometry_msgs::msg::PoseStamped & target_pose);
 
+    /**
+   * @brief Get the Closest Obstacle Dist In Path object
+   * @details This function is used to find the closest obstacle in the path to the robot's current position.The obstacle is defined as the point in the path that has the minimum Euclidean distance to the robot's current position.
+   * @return distance between the robot's current position and the obstacle's position in path length space
+   */
+  double getClosestObstacleDistInPath(const nav_msgs::msg::Path &path);
+
+
   /**
    * @brief checks for the cusp position
    * @param pose Pose input to determine the cusp position
@@ -339,6 +348,10 @@ protected:
   bool allow_reversing_;
   bool is_reversing_;
   bool use_heading_from_path_;
+  bool use_path_collision_detection_;
+  double path_collision_detect_dist_;
+  double path_collision_stop_dist_;
+  double path_collision_min_velocity_;
 
   geometry_msgs::msg::Twist last_cmd_vel_;
 
@@ -346,6 +359,7 @@ protected:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>
   target_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
   collision_checker_;
