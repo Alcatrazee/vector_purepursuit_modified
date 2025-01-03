@@ -289,10 +289,10 @@ double VectorPursuitController::getLookAheadDistance(
   // TODO(arthur_bcr): verify that the speed variable is correctly set
   double lookahead_dist = lookahead_dist_;
   if (use_velocity_scaled_lookahead_dist_) {
-    lookahead_dist = std::abs(speed.linear.x) * lookahead_time_;
+    lookahead_dist = min_lookahead_dist_+std::abs(speed.linear.x) * lookahead_time_;
     lookahead_dist = std::clamp(lookahead_dist, min_lookahead_dist_, max_lookahead_dist_);
   }
-
+  RCLCPP_INFO(logger_,"lhd: %f",lookahead_dist);
   return lookahead_dist;
 }
 
@@ -399,9 +399,26 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
       angular_vel *= -1;
     }
     // rewrite angular velocity control when tracking last goal
-    if(lookahead_point == transformed_plan.poses[transformed_plan.poses.size()-1]){
-      double target_angle = tf2::getYaw(transformed_plan.poses[transformed_plan.poses.size()-1].pose.orientation);
-      angular_vel = k_yaw_ * target_angle;
+
+    if(use_rotate_to_heading_ == false){
+      bool enable_finanl_orientation_tracking = false;
+      if(use_heading_from_path_){
+        if(lookahead_point == transformed_plan.poses[transformed_plan.poses.size()-1])
+          enable_finanl_orientation_tracking = true;
+      }else{
+        double dist_goal_and_lh_point = std::hypot(lookahead_point.pose.position.x - transformed_plan.poses[transformed_plan.poses.size()-1].pose.position.x,
+                                                    lookahead_point.pose.position.y -  transformed_plan.poses[transformed_plan.poses.size()-1].pose.position.y );
+        // double yaw_diff = abs(tf2::getYaw(transformed_plan.poses[transformed_plan.poses.size()-1].pose.orientation) - tf2::getYaw(lookahead_point.pose.orientation));
+        // std::cout << "goal and goal : " << dist_goal_and_lh_point << "," << yaw_diff << std::endl;
+        if(dist_goal_and_lh_point < 0.001){
+          enable_finanl_orientation_tracking = true;
+        }
+      }
+      
+      if(enable_finanl_orientation_tracking == true){
+        double target_angle = tf2::getYaw(transformed_plan.poses[transformed_plan.poses.size()-1].pose.orientation);
+        angular_vel = k_yaw_ * target_angle;
+      }
     }
   }
 
@@ -880,7 +897,7 @@ double VectorPursuitController::getClosestObstacleDistInPath(const nav_msgs::msg
                                                            yaw,costmap_ros_->getRobotFootprint());
     path_without_obst.poses.push_back(global_plan_.poses[i]);
     // RCLCPP_INFO(logger_,"cost at %f,%f,%f is: %f",global_plan_.poses[i].pose.position.x,global_plan_.poses[i].pose.position.y,yaw,cost);
-    if(cost > static_cast<double>(nav2_costmap_2d::MAX_NON_OBSTACLE)){
+    if(cost > static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)){
       // dist = path_length;
       dist = nav2_util::geometry_utils::calculate_path_length(path_without_obst,start_pose_count);
       
