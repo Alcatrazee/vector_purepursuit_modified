@@ -1,2 +1,0 @@
-/usr/bin/llvm-ar-15 qc libgtest.a CMakeFiles/gtest.dir/src/gtest-all.cc.o
-/usr/bin/llvm-ranlib-15 libgtest.a
