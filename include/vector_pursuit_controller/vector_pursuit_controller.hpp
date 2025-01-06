@@ -317,6 +317,10 @@ protected:
   rclcpp::Logger logger_ {rclcpp::get_logger("VectorPursuitController")};
   rclcpp::Clock::SharedPtr clock_;
 
+  double halt_moment_due_to_obst_;
+  bool halt_moment_valid_;
+  bool use_wait_before_obst_;
+  double patient_encounter_obst_;
   double k_,k_yaw_;
   double desired_linear_vel_, base_desired_linear_vel_;
   double lookahead_dist_;

@@ -111,6 +111,10 @@ void VectorPursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".path_collision_stop_dist", rclcpp::ParameterValue(0.05));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_wait_before_obst",rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".patient_encounter_obst", rclcpp::ParameterValue(10.0));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".cost_scaling_gain", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".inflation_cost_scaling_factor", rclcpp::ParameterValue(3.0));
@@ -180,6 +184,11 @@ void VectorPursuitController::configure(
     path_collision_stop_dist_);
   node->get_parameter(plugin_name_ + ".path_collision_min_velocity",
     path_collision_min_velocity_);
+  node->get_parameter(plugin_name_ + ".use_wait_before_obst",
+    use_wait_before_obst_);
+  node->get_parameter(plugin_name_ + ".patient_encounter_obst",
+    patient_encounter_obst_);
+  
 
   node->get_parameter(plugin_name_ + ".cost_scaling_dist", cost_scaling_dist_);
   node->get_parameter(plugin_name_ + ".cost_scaling_gain", cost_scaling_gain_);
@@ -527,13 +536,26 @@ void VectorPursuitController::applyConstraints(
   if(use_path_collision_detection_){
     double dist_to_obst = getClosestObstacleDistInPath(global_plan_);
     if(dist_to_obst >0 && dist_to_obst < path_collision_detect_dist_){
-      if(dist_to_obst <= path_collision_stop_dist_){
+      if(dist_to_obst <= path_collision_stop_dist_){    // halt to stop
         max_vel_for_path_obst = 0;
-        throw nav2_core::PlannerException("VectorPursuitController: Collision detected ahead!");
-      }else{
+        if(use_wait_before_obst_==false){
+          throw nav2_core::PlannerException("VectorPursuitController: Collision detected ahead!");
+        }
+        if(halt_moment_valid_ == false) {
+          halt_moment_due_to_obst_ = rclcpp::Clock().now().seconds();
+          halt_moment_valid_ = true;
+        }else{
+          double dt = rclcpp::Clock().now().seconds() - halt_moment_due_to_obst_;
+          RCLCPP_INFO(logger_,"encountered obstacle for %lf seconds",dt);
+          if(dt > patient_encounter_obst_ && use_wait_before_obst_ == true){
+            throw nav2_core::PlannerException("VectorPursuitController: Collision detected ahead!");
+          }
+        }
+      }else{  // slow down
         double max_vel_for_path_obst_computed = (desired_linear_vel_ - 0)/(path_collision_detect_dist_ - path_collision_stop_dist_)*(dist_to_obst - path_collision_stop_dist_) + 0;
         max_vel_for_path_obst = std::max(max_vel_for_path_obst_computed,path_collision_min_velocity_);
         RCLCPP_INFO(logger_,"max_vel_for_path_obst:%lf  %lf",max_vel_for_path_obst,path_collision_stop_dist_);
+        halt_moment_valid_ = false;
       }
     }
     
@@ -1096,6 +1118,8 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         path_collision_stop_dist_ = parameter.as_double();
       } else if (name == plugin_name_ + ".path_collision_min_velocity") {
         path_collision_min_velocity_ = parameter.as_double();
+      }else if (name == plugin_name_ + ".patient_encounter_obst") {
+        patient_encounter_obst_ = parameter.as_double();
       } else if (name == plugin_name_ + ".cost_scaling_gain") {
         cost_scaling_gain_ = parameter.as_double();
       } else if (name == plugin_name_ + ".transform_tolerance") {
@@ -1137,6 +1161,8 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         use_heading_from_path_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".use_path_collision_detection") {
         use_path_collision_detection_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_wait_before_obst") {
+        use_wait_before_obst_ = parameter.as_bool();
       }
     }
   }
