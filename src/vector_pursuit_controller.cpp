@@ -399,7 +399,7 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
     double curvature = 1.0 / turning_radius;
      // TODO: add obstacle constrain in future path
     applyConstraints(
-      curvature, last_cmd_vel_,
+      curvature, last_cmd_vel_,dist_to_cusp,
       costAtPose(pose.pose.position.x, pose.pose.position.y), linear_vel, transformed_plan, sign);
 
     // Compute angular velocity
@@ -512,7 +512,7 @@ void VectorPursuitController::applyApproachVelocityScaling(
 }
 
 void VectorPursuitController::applyConstraints(
-  const double & curvature, const geometry_msgs::msg::Twist & curr_speed,
+  const double & curvature, const geometry_msgs::msg::Twist & curr_speed,const double & cuspDist,
   const double & pose_cost, double & linear_vel, const nav_msgs::msg::Path & path, double & sign)
 {
   double cost_vel = linear_vel;
@@ -532,7 +532,8 @@ void VectorPursuitController::applyConstraints(
   }
 
   double max_vel_for_path_obst = desired_linear_vel_;
-
+  
+  // path collision constrain
   if(use_path_collision_detection_){
     double dist_to_obst = getClosestObstacleDistInPath(global_plan_);
     if(dist_to_obst >0 && dist_to_obst < path_collision_detect_dist_){
@@ -558,15 +559,22 @@ void VectorPursuitController::applyConstraints(
         halt_moment_valid_ = false;
       }
     }
-    
   }
 
   // limit the linear velocity by curvature
   double max_vel_for_curve = std::sqrt(max_lateral_accel_ / std::abs(curvature));
 
+  // cusp distance constrain
+  double max_vel_for_cusp_dist = desired_linear_vel_;
+  if(cuspDist<approach_velocity_scaling_dist_){
+    max_vel_for_cusp_dist = desired_linear_vel_*cuspDist/approach_velocity_scaling_dist_;
+    RCLCPP_INFO(logger_,"cuspDist:%lf ratio:%lf vel:%lf",cuspDist,cuspDist/approach_velocity_scaling_dist_,max_vel_for_cusp_dist);
+  }
+  
+
   // Apply constraints
   linear_vel = std::min(
-    {linear_vel, max_vel_for_curve, cost_vel,max_vel_for_path_obst,
+    {linear_vel, max_vel_for_curve, cost_vel,max_vel_for_path_obst,max_vel_for_cusp_dist,
       std::abs(curr_speed.linear.x) + max_linear_accel_ * control_duration_});
 
   applyApproachVelocityScaling(path, linear_vel);
@@ -978,6 +986,22 @@ void VectorPursuitController::setSpeedLimit(
   }
 }
 
+void VectorPursuitController::removeDuplicatedPathPoint(nav_msgs::msg::Path & path)
+{
+  for(size_t i=1;i<path.poses.size();i++){
+    if(path.poses[i].pose.position.x == path.poses[i-1].pose.position.x &&
+      path.poses[i].pose.position.y == path.poses[i-1].pose.position.y &&
+      path.poses[i].pose.position.z == path.poses[i-1].pose.position.z &&
+      path.poses[i].pose.orientation.x == path.poses[i-1].pose.orientation.x &&
+      path.poses[i].pose.orientation.y == path.poses[i-1].pose.orientation.y &&
+      path.poses[i].pose.orientation.z == path.poses[i-1].pose.orientation.z){
+        
+      path.poses.erase(path.poses.begin() + i);
+      RCLCPP_INFO(logger_, "Removed duplicate pose");
+    }
+  }
+}
+
 nav_msgs::msg::Path VectorPursuitController::transformGlobalPlan(
   const geometry_msgs::msg::PoseStamped & pose)
 {
@@ -1038,6 +1062,7 @@ nav_msgs::msg::Path VectorPursuitController::transformGlobalPlan(
   // Remove the portion of the global plan that we've already passed so we don't
   // process it on the next iteration (this is called path pruning)
   global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
+  removeDuplicatedPathPoint(global_plan_);
   global_path_pub_->publish(transformed_plan);
 
   if (transformed_plan.poses.empty()) {

@@ -250,7 +250,7 @@ protected:
    * @param path Transformed global path
    */
   void applyConstraints(
-    const double & curvature, const geometry_msgs::msg::Twist & curr_speed,
+    const double & curvature, const geometry_msgs::msg::Twist & curr_speed, const double & cuspDist,
     const double & pose_cost, double & linear_vel, const nav_msgs::msg::Path & path, double & sign);
 
   /**
@@ -284,6 +284,13 @@ protected:
    * @return robot distance from the cusp
    */
   double getCuspDist(const nav_msgs::msg::Path & transformed_plan);
+
+  /**
+   * @brief remove duplicated path point so that robot can find cusp position correctly
+   * @param path plan to prune duplicated points
+   * @return none
+   */
+  void removeDuplicatedPathPoint(nav_msgs::msg::Path & path);
 
   /**
    * @brief Create a smooth and kinematically smoothed rotation command
