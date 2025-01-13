@@ -111,6 +111,12 @@ controller_server:
       approach_velocity_scaling_dist: 0.5
       max_allowed_time_to_collision_up_to_target: 1.0
       use_collision_detection: true
+      use_path_collision_detection: true
+      path_collision_detect_dist: 3.0
+      path_collision_stop_dist: 1.0
+      path_collision_min_velocity: 0.05
+      use_enforce_path_inversion: true
+      inversion_xy_tolerance: 0.05
       use_cost_regulated_linear_velocity_scaling: true
       cost_scaling_dist: 0.5
       cost_scaling_gain: 1.0

@@ -1,4 +1,4 @@
-1. check the cusp condition and find out the cusp
-2. make it stop in cusp then start track the rest of the path
-2. check how it determin the cost of current position
-3. rewrite cost of current position to make robot slow down before obstacle
+1. check the cusp condition and find out the cusp                               done
+2. make it stop in cusp then start track the rest of the path                   done
+3. check how it determin the cost of current position                           done
+4. rewrite cost of current position to make robot slow down before obstacle     done

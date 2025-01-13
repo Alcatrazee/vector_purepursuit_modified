@@ -139,7 +139,12 @@ void VectorPursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_heading_from_path",
     rclcpp::ParameterValue(true));
-
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_enforce_path_inversion",
+    rclcpp::ParameterValue(false));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".inversion_xy_tolerance", rclcpp::ParameterValue(0.05));
+  
   node->get_parameter(plugin_name_ + ".k", k_);
   node->get_parameter(plugin_name_ + ".k_yaw", k_yaw_);
   node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
@@ -210,6 +215,13 @@ void VectorPursuitController::configure(
   node->get_parameter(
     plugin_name_ + ".use_heading_from_path",
     use_heading_from_path_);
+
+  node->get_parameter(
+    plugin_name_ + ".use_enforce_path_inversion",
+    use_enforce_path_inversion_);
+  node->get_parameter(
+    plugin_name_ + ".inversion_xy_tolerance",
+    inversion_xy_tolerance_);
 
   transform_tolerance_ = tf2::durationFromSec(transform_tolerance);
   control_duration_ = 1.0 / control_frequency;
@@ -301,7 +313,7 @@ double VectorPursuitController::getLookAheadDistance(
     lookahead_dist = min_lookahead_dist_+std::abs(speed.linear.x) * lookahead_time_;
     lookahead_dist = std::clamp(lookahead_dist, min_lookahead_dist_, max_lookahead_dist_);
   }
-  RCLCPP_INFO(logger_,"lhd: %f",lookahead_dist);
+  // RCLCPP_INFO(logger_,"lhd: %f",lookahead_dist);
   return lookahead_dist;
 }
 
@@ -347,7 +359,7 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   std::lock_guard<std::mutex> lock_reinit(mutex_);
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
-
+  static geometry_msgs::msg::PoseStamped cusp_pos;
   // Update goal tolerances
   geometry_msgs::msg::Pose pose_tolerance;
   geometry_msgs::msg::Twist vel_tolerance;
@@ -364,7 +376,8 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   double lookahead_dist = getLookAheadDistance(last_cmd_vel_);
 
   // Cusp check
-  const double dist_to_cusp = getCuspDist(transformed_plan);        // cusp means sharp turn point
+  geometry_msgs::msg::PoseStamped temp;
+  const double dist_to_cusp = getCuspDist(transformed_plan,temp);          // cusp means sharp turn point
 
   // if the lookahead distance is further than the cusp, use the cusp distance instead
   if (dist_to_cusp < lookahead_dist) {
@@ -415,17 +428,15 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
         if(lookahead_point == transformed_plan.poses[transformed_plan.poses.size()-1])
           enable_finanl_orientation_tracking = true;
       }else{
-        double dist_goal_and_lh_point = std::hypot(lookahead_point.pose.position.x - transformed_plan.poses[transformed_plan.poses.size()-1].pose.position.x,
-                                                    lookahead_point.pose.position.y -  transformed_plan.poses[transformed_plan.poses.size()-1].pose.position.y );
-        // double yaw_diff = abs(tf2::getYaw(transformed_plan.poses[transformed_plan.poses.size()-1].pose.orientation) - tf2::getYaw(lookahead_point.pose.orientation));
-        // std::cout << "goal and goal : " << dist_goal_and_lh_point << "," << yaw_diff << std::endl;
+        double dist_goal_and_lh_point = std::hypot(lookahead_point.pose.position.x - transformed_plan.poses.back().pose.position.x,
+                                                    lookahead_point.pose.position.y -  transformed_plan.poses.back().pose.position.y );
         if(dist_goal_and_lh_point < 0.001){
           enable_finanl_orientation_tracking = true;
         }
       }
       
       if(enable_finanl_orientation_tracking == true){
-        double target_angle = tf2::getYaw(transformed_plan.poses[transformed_plan.poses.size()-1].pose.orientation);
+        double target_angle = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
         angular_vel = k_yaw_ * target_angle;
       }
     }
@@ -851,7 +862,7 @@ bool VectorPursuitController::isCollisionImminent(
 }
 
 double VectorPursuitController::getCuspDist(
-  const nav_msgs::msg::Path & transformed_plan)
+  const nav_msgs::msg::Path & transformed_plan,geometry_msgs::msg::PoseStamped &cusp_point)
 {
   // Iterating through the transformed global path to determine the position of the cusp
   for (unsigned int pose_id = 1; pose_id < transformed_plan.poses.size() - 1; ++pose_id) {
@@ -876,6 +887,9 @@ double VectorPursuitController::getCuspDist(
       point.point.x = transformed_plan.poses[pose_id].pose.position.x;
       point.point.y = transformed_plan.poses[pose_id].pose.position.y;
       cusp_pub_->publish(point);
+      cusp_point.pose.position.x = point.point.x;
+      cusp_point.pose.position.y = point.point.y;
+      cusp_point.pose.position.z = point.point.z;
       // returning the distance if there is a cusp
       // The transformed path is in the robots frame, so robot is at the origin
       return hypot(
@@ -1017,10 +1031,29 @@ nav_msgs::msg::Path VectorPursuitController::transformGlobalPlan(
 
   // We'll discard points on the plan that are outside the local costmap
   double max_costmap_extent = getCostmapMaxExtent();
+  double search_dist = max_robot_pose_search_dist_;
+
+  if(use_enforce_path_inversion_ == true){
+    geometry_msgs::msg::PoseStamped cusp_point;
+    double dist = getCuspDist(global_plan_,cusp_point);
+    double dist_to_cusp = std::hypot(robot_pose.pose.position.x - cusp_point.pose.position.x,robot_pose.pose.position.y - cusp_point.pose.position.y);
+    if(dist!=std::numeric_limits<double>::max()){
+      if(dist_to_cusp > inversion_xy_tolerance_){
+        RCLCPP_INFO(logger_,"tracking to cusp.");
+        search_dist = dist_to_cusp;
+        RCLCPP_INFO(logger_,"cusp dist: %lf  %lf %lf",dist_to_cusp,global_plan_.poses[0].pose.position.x,global_plan_.poses[0].pose.position.y);
+      }else{
+        RCLCPP_INFO(logger_,"allowed to move on to next cusp.");
+      }
+    }else{
+      RCLCPP_INFO(logger_,"no cusp in horizon.");
+    }
+  }
+  
 
   auto closest_pose_upper_bound =
     nav2_util::geometry_utils::first_after_integrated_distance(
-    global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
+    global_plan_.poses.begin(), global_plan_.poses.end(), search_dist);
 
   // First find the closest pose on the path to the robot
   // bounded by when the path turns around (if it does) so we don't get a pose from a later
@@ -1168,6 +1201,8 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         max_lateral_accel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".max_linear_accel") {
         max_linear_accel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".inversion_xy_tolerance_") {
+        inversion_xy_tolerance_ = parameter.as_double();
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
       if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
@@ -1188,7 +1223,9 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         use_path_collision_detection_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".use_wait_before_obst") {
         use_wait_before_obst_ = parameter.as_bool();
-      }
+      } else if (name == plugin_name_ + ".use_enforce_path_inversion") {
+        use_enforce_path_inversion_ = parameter.as_bool();
+      } 
     }
   }
 

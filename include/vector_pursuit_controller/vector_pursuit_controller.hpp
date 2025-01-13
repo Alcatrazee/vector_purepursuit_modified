@@ -283,7 +283,7 @@ protected:
    * @param pose Pose input to determine the cusp position
    * @return robot distance from the cusp
    */
-  double getCuspDist(const nav_msgs::msg::Path & transformed_plan);
+  double getCuspDist(const nav_msgs::msg::Path & transformed_plan,geometry_msgs::msg::PoseStamped &cusp_point);
 
   /**
    * @brief remove duplicated path point so that robot can find cusp position correctly
@@ -363,6 +363,8 @@ protected:
   double path_collision_detect_dist_;
   double path_collision_stop_dist_;
   double path_collision_min_velocity_;
+  bool use_enforce_path_inversion_;
+  double inversion_xy_tolerance_;
 
   geometry_msgs::msg::Twist last_cmd_vel_;
 
